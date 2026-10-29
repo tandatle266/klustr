@@ -4,6 +4,7 @@ import { formatAge } from '@/lib/time'
 import { Chips, ErrorBox, Field, MaybeSection, Section, Td, Th } from '@/features/_shared/DetailPrimitives'
 import { Copyable } from '@/features/_shared/Copyable'
 import { useResourceDetail } from '@/features/_shared/useResourceDetail'
+import { PortForwardPortAction } from '@/features/portforward/PortForwardPortAction'
 
 export function ServiceDetailBody({
   contextName,
@@ -45,6 +46,7 @@ export function ServiceDetailBody({
                   <Th>Port</Th>
                   <Th>Target</Th>
                   <Th>NodePort</Th>
+                  <Th>Forward</Th>
                 </tr>
               </thead>
               <tbody>
@@ -55,6 +57,14 @@ export function ServiceDetailBody({
                     <Td className="font-mono">{p.port}</Td>
                     <Td className="font-mono">{p.targetPort}</Td>
                     <Td className="font-mono">{p.nodePort || '—'}</Td>
+                    <Td>
+                      <PortForwardPortAction
+                        contextName={contextName}
+                        target={{ kind: 'Service', namespace: detail.namespace, name: detail.name }}
+                        port={p.port}
+                        protocol={p.protocol}
+                      />
+                    </Td>
                   </tr>
                 ))}
               </tbody>

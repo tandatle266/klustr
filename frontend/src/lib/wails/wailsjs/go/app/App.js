@@ -6,6 +6,10 @@ export function AddHelmRepo(arg1, arg2) {
   return window['go']['app']['App']['AddHelmRepo'](arg1, arg2);
 }
 
+export function AddPortForward(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['app']['App']['AddPortForward'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
 export function ApplyResourceYAML(arg1, arg2) {
   return window['go']['app']['App']['ApplyResourceYAML'](arg1, arg2);
 }
@@ -68,6 +72,10 @@ export function DrainNode(arg1, arg2, arg3) {
 
 export function DryRunApplyResourceYAML(arg1, arg2) {
   return window['go']['app']['App']['DryRunApplyResourceYAML'](arg1, arg2);
+}
+
+export function EditPortForward(arg1, arg2, arg3) {
+  return window['go']['app']['App']['EditPortForward'](arg1, arg2, arg3);
 }
 
 export function EnsureCustomResourceWatch(arg1, arg2, arg3, arg4) {
@@ -1262,6 +1270,10 @@ export function RemoveHelmRepo(arg1) {
   return window['go']['app']['App']['RemoveHelmRepo'](arg1);
 }
 
+export function RemovePortForward(arg1) {
+  return window['go']['app']['App']['RemovePortForward'](arg1);
+}
+
 export function RenewCertificate(arg1, arg2, arg3) {
   return window['go']['app']['App']['RenewCertificate'](arg1, arg2, arg3);
 }
@@ -1370,8 +1382,8 @@ export function StartPodLogs(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['app']['App']['StartPodLogs'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-export function StartPortForward(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['app']['App']['StartPortForward'](arg1, arg2, arg3, arg4, arg5);
+export function StartPortForward(arg1) {
+  return window['go']['app']['App']['StartPortForward'](arg1);
 }
 
 export function StartTektonPipeline(arg1, arg2, arg3, arg4) {

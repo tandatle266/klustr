@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { api, type ContainerDetail, type EnvVarRef, type PodDetail } from '@/lib/api'
+import { PortForwardPortAction } from '@/features/portforward/PortForwardPortAction'
 import { formatAge } from '@/lib/time'
 import { Chips, Field, MaybeSection, Section, Td, Th } from '@/features/_shared/DetailPrimitives'
 import { ConditionPill } from '@/features/_shared/ConditionPill'
@@ -86,6 +87,7 @@ export function PodOverviewBody({
 
       {detail.initContainers.length > 0 && <PodContainersTable title="Init Containers" containers={detail.initContainers} />}
       <PodContainersTable title="Containers" containers={detail.containers} />
+      <PodPortsTable contextName={contextName} detail={detail} />
 
       <ContainerEnvSection
         title="Environment"
@@ -465,6 +467,47 @@ function resourceCell(req: string, lim: string) {
       {req || '—'}
       <span className="text-muted-foreground"> / {lim || '—'}</span>
     </span>
+  )
+}
+
+function PodPortsTable({ contextName, detail }: { contextName: string | null; detail: PodDetail }) {
+  const ports = detail.containers.flatMap((c) => (c.ports ?? []).map((p) => ({ ...p, container: c.name })))
+  if (ports.length === 0) return null
+  return (
+    <section className="rounded-md border border-border bg-card/40 p-4">
+      <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Ports</h3>
+      <div className="overflow-hidden rounded border border-border">
+        <table className="w-full text-xs">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr>
+              <Th>Container</Th>
+              <Th>Name</Th>
+              <Th>Port</Th>
+              <Th>Protocol</Th>
+              <Th>Forward</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {ports.map((p, i) => (
+              <tr key={`${p.container}:${p.containerPort}:${p.protocol}:${i}`} className="border-t border-border">
+                <Td>{p.container}</Td>
+                <Td>{p.name || '—'}</Td>
+                <Td className="font-mono">{p.containerPort}</Td>
+                <Td>{p.protocol || 'TCP'}</Td>
+                <Td>
+                  <PortForwardPortAction
+                    contextName={contextName}
+                    target={{ kind: 'Pod', namespace: detail.namespace, name: detail.name }}
+                    port={p.containerPort}
+                    protocol={p.protocol || 'TCP'}
+                  />
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 

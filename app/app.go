@@ -357,21 +357,45 @@ func (a *App) RestartWorkload(contextName, kind, namespace, name string) error {
 	return a.clients.RestartWorkload(a.ctx, contextName, kind, namespace, name)
 }
 
-func (a *App) StartPortForward(contextName, namespace, podName string, localPort, remotePort int) (kube.PortForwardInfo, error) {
-	// localPort 0 means "auto-assign an ephemeral port"; remotePort is a real
-	// container port. Reject out-of-range values instead of letting the uint16
-	// conversion silently wrap (e.g. 70000 -> 4464).
+// AddPortForward forwards a container port of a Pod, or a port of a Service,
+// to localPort (0 lets the OS pick one) and saves it.
+func (a *App) AddPortForward(contextName, namespace, kind, name string, port, localPort int, protocol string) (kube.PortForwardInfo, error) {
+	// Reject out-of-range values instead of letting the uint16 conversion
+	// silently wrap (e.g. 70000 -> 4464).
+	if port < 1 || port > 65535 {
+		return kube.PortForwardInfo{}, fmt.Errorf("port %d out of range (1-65535)", port)
+	}
 	if localPort < 0 || localPort > 65535 {
 		return kube.PortForwardInfo{}, fmt.Errorf("local port %d out of range (0-65535)", localPort)
 	}
-	if remotePort < 1 || remotePort > 65535 {
-		return kube.PortForwardInfo{}, fmt.Errorf("remote port %d out of range (1-65535)", remotePort)
-	}
-	return a.clients.StartPortForward(contextName, namespace, podName, uint16(localPort), uint16(remotePort))
+	return a.clients.AddPortForward(kube.PortForwardSpec{
+		Context:   contextName,
+		Namespace: namespace,
+		Kind:      kind,
+		Name:      name,
+		Port:      uint16(port),
+		LocalPort: uint16(localPort),
+		Protocol:  protocol,
+	})
 }
 
-func (a *App) StopPortForward(id string) {
-	a.clients.StopPortForward(id)
+func (a *App) StartPortForward(id string) (kube.PortForwardInfo, error) {
+	return a.clients.StartPortForward(id)
+}
+
+func (a *App) StopPortForward(id string) error {
+	return a.clients.StopPortForward(id)
+}
+
+func (a *App) EditPortForward(id string, localPort int, protocol string) (kube.PortForwardInfo, error) {
+	if localPort < 0 || localPort > 65535 {
+		return kube.PortForwardInfo{}, fmt.Errorf("local port %d out of range (0-65535)", localPort)
+	}
+	return a.clients.EditPortForward(id, uint16(localPort), protocol)
+}
+
+func (a *App) RemovePortForward(id string) error {
+	return a.clients.RemovePortForward(id)
 }
 
 func (a *App) ListPortForwards() []kube.PortForwardInfo {

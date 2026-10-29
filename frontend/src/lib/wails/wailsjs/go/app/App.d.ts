@@ -5,6 +5,8 @@ import {update} from '../models';
 
 export function AddHelmRepo(arg1:string,arg2:string):Promise<void>;
 
+export function AddPortForward(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:string):Promise<kube.PortForwardInfo>;
+
 export function ApplyResourceYAML(arg1:string,arg2:string):Promise<void>;
 
 export function ApproveCertificateSigningRequest(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -36,6 +38,8 @@ export function DenyCertificateSigningRequest(arg1:string,arg2:string,arg3:strin
 export function DrainNode(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function DryRunApplyResourceYAML(arg1:string,arg2:string):Promise<kube.MutationDiff>;
+
+export function EditPortForward(arg1:string,arg2:number,arg3:string):Promise<kube.PortForwardInfo>;
 
 export function EnsureCustomResourceWatch(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
@@ -633,6 +637,8 @@ export function RefreshArgoApplication(arg1:string,arg2:string,arg3:string,arg4:
 
 export function RemoveHelmRepo(arg1:string):Promise<void>;
 
+export function RemovePortForward(arg1:string):Promise<void>;
+
 export function RenewCertificate(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RerunTektonPipelineRun(arg1:string,arg2:string,arg3:string):Promise<string>;
@@ -687,7 +693,7 @@ export function StartPodDebug(arg1:string,arg2:string,arg3:string,arg4:string,ar
 
 export function StartPodLogs(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:boolean,arg7:number):Promise<string>;
 
-export function StartPortForward(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<kube.PortForwardInfo>;
+export function StartPortForward(arg1:string):Promise<kube.PortForwardInfo>;
 
 export function StartTektonPipeline(arg1:string,arg2:string,arg3:string,arg4:kube.TektonStartOptions):Promise<string>;
 

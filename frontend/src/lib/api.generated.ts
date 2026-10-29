@@ -381,6 +381,7 @@ export type UpdateResult = update.Result
 
 export const generatedApi = {
   addHelmRepo: bindings.AddHelmRepo,
+  addPortForward: bindings.AddPortForward,
   applyResourceYAML: bindings.ApplyResourceYAML,
   approveCertificateSigningRequest: bindings.ApproveCertificateSigningRequest,
   cancelTektonPipelineRun: bindings.CancelTektonPipelineRun,
@@ -397,6 +398,7 @@ export const generatedApi = {
   denyCertificateSigningRequest: bindings.DenyCertificateSigningRequest,
   drainNode: bindings.DrainNode,
   dryRunApplyResourceYAML: bindings.DryRunApplyResourceYAML,
+  editPortForward: bindings.EditPortForward,
   ensureCustomResourceWatch: bindings.EnsureCustomResourceWatch,
   fetchMetricsServerManifest: bindings.FetchMetricsServerManifest,
   getAPIService: bindings.GetAPIService,
@@ -695,6 +697,7 @@ export const generatedApi = {
   reconcileFluxResource: bindings.ReconcileFluxResource,
   refreshArgoApplication: bindings.RefreshArgoApplication,
   removeHelmRepo: bindings.RemoveHelmRepo,
+  removePortForward: bindings.RemovePortForward,
   renewCertificate: bindings.RenewCertificate,
   rerunTektonPipelineRun: bindings.RerunTektonPipelineRun,
   resizeExec: bindings.ResizeExec,

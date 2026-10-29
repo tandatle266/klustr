@@ -52,23 +52,21 @@ func failedPFTransport(t *testing.T, cfg *rest.Config) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := newPFManager()
+	mgr := newTestPFManager(func(ctx context.Context, ready chan struct{}) (portForwarder, error) {
+		return newPortForwarder(ctx, cs, cfg, "default", "pod", 0, 80, ready)
+	})
 	t.Cleanup(mgr.stopAll)
 	result := make(chan error, 1)
 	go func() {
-		_, err := mgr.start("ctx-a", "default", "pod", func(ctx context.Context, ready chan struct{}) (portForwarder, error) {
-			return newPortForwarder(ctx, cs, cfg, "default", "pod", 0, 80, ready)
-		})
+		_, err := mgr.add(testPFSpec)
 		result <- err
 	}()
 	err = receivePFTest(t, result)
 	if err == nil {
 		t.Fatal("rejected transport unexpectedly became ready")
 	}
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
-	if len(mgr.sessions) != 0 {
-		t.Error("failed transport retained a pending session")
+	if got := mgr.list(); len(got) != 1 || got[0].Status != pfError || got[0].Enabled || mgr.runningForTest(got[0].ID) {
+		t.Errorf("failed transport left the forward running: %+v", got)
 	}
 	return err
 }
@@ -248,41 +246,45 @@ func TestPortForwardTransportTunnelFailureDoesNotRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := newPFManager()
+	mgr := newTestPFManager(func(ctx context.Context, ready chan struct{}) (portForwarder, error) {
+		return newPortForwarder(ctx, cs, cfg, "default", "pod", 0, 80, ready)
+	})
+	// The supervisor would reconnect; hold it off so only the failed
+	// tunnel's own requests are counted.
+	mgr.backoff = func(int) time.Duration { return time.Hour }
 	t.Cleanup(mgr.stopAll)
-	changed := make(chan struct{}, 4)
-	mgr.setOnChange(func() { changed <- struct{}{} })
+	changed := make(chan struct{}, 8)
 	type startResult struct {
 		info PortForwardInfo
 		err  error
 	}
 	started := make(chan startResult, 1)
 	go func() {
-		info, err := mgr.start("ctx-a", "default", "pod", func(ctx context.Context, ready chan struct{}) (portForwarder, error) {
-			return newPortForwarder(ctx, cs, cfg, "default", "pod", 0, 80, ready)
-		})
+		info, err := mgr.add(testPFSpec)
 		started <- startResult{info: info, err: err}
 	}()
 	result := receivePFTest(t, started)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	receivePFTest(t, changed)
+	mgr.setOnChange(func() { changed <- struct{}{} })
 	close(failTunnel)
 	receivePFTest(t, serverDone)
 	receivePFTest(t, changed)
 	forwards := mgr.list()
-	if len(forwards) != 1 || forwards[0].ID != result.info.ID || forwards[0].Status != "error" || forwards[0].Error == "" {
-		t.Fatalf("tunnel failure was not retained for display: %+v", forwards)
+	if len(forwards) != 1 || forwards[0].ID != result.info.ID || forwards[0].Status != pfReconnecting || forwards[0].Error == "" {
+		t.Fatalf("tunnel failure was not shown while reconnecting: %+v", forwards)
 	}
-	local, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(result.info.LocalPort)), time.Second)
+	local, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(result.info.BoundPort)), time.Second)
 	if err == nil {
 		_ = local.Close()
 		t.Error("failed tunnel retained its local listener")
 	}
 	requests.assertMethods(t, http.MethodGet)
-	mgr.stop(result.info.ID)
+	if err := mgr.remove(result.info.ID); err != nil {
+		t.Fatal(err)
+	}
 	if forwards := mgr.list(); len(forwards) != 0 {
-		t.Errorf("dismissed tunnel failure retained a session: %+v", forwards)
+		t.Errorf("removed forward is still listed: %+v", forwards)
 	}
 }

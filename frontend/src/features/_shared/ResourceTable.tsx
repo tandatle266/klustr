@@ -205,7 +205,11 @@ function ResourceRowInner<T>({
   const identity = tagged as unknown as RowIdentity
   const rowKey = identity.name ? identityKey(ctx, identity) : null
   const canPortForward =
-    kind === 'Pod' ? (tagged as { hasPorts?: boolean }).hasPorts === true : false
+    kind === 'Pod'
+      ? (tagged as { hasPorts?: boolean }).hasPorts === true
+      : kind === 'Service'
+        ? Boolean((tagged as { ports?: string }).ports)
+        : false
   const rowEl = (
     <tr
       ref={measureRef}

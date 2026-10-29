@@ -106,7 +106,6 @@ func NewClientManager() *ClientManager {
 		logs:        newLogSessionManager(),
 		execs:       newExecSessionManager(),
 		terms:       newTerminalSessionManager(),
-		pf:          newPFManager(),
 		metrics:     newMetricsCache(),
 		helm:        helm,
 		readOnly:    make(map[string]bool),
@@ -116,6 +115,8 @@ func NewClientManager() *ClientManager {
 		credRewatch: make(map[string]bool),
 	}
 	m.creds.setOnRefreshed(m.onCredentialsRefreshed)
+	pfPath, _ := portForwardsStorePath()
+	m.pf = newPFManager(pfPath, m.connectPortForward)
 	return m
 }
 
@@ -420,6 +421,7 @@ func (m *ClientManager) watchLocked(ctx context.Context, contextName string, reu
 	if cb != nil {
 		cb(ContextChange{Context: contextName, Kind: "_access"})
 	}
+	m.pf.resume(contextName)
 	return nil
 }
 
@@ -460,7 +462,7 @@ func (m *ClientManager) StopWatch(contextName string) {
 	m.metrics.invalidate(contextName)
 	m.helm.invalidate(contextName)
 	m.creds.pauseRefresh(contextName)
-	m.pf.stopForContext(contextName)
+	m.pf.suspendContext(contextName)
 	// Log streams / exec sessions / node shells / local terminals captured the
 	// pre-disconnect client at start(), so they keep their apiserver watch or
 	// SPDY channel open unless torn down explicitly here.
@@ -697,22 +699,26 @@ func (m *ClientManager) StopLocalTerminal(sessionID string) {
 
 // ---- Port-forward ------------------------------------------------------
 
-func (m *ClientManager) StartPortForward(contextName, namespace, podName string, localPort, remotePort uint16) (PortForwardInfo, error) {
-	return m.pf.start(contextName, namespace, podName, func(ctx context.Context, readyCh chan struct{}) (portForwarder, error) {
-		cs, err := m.Clientset(contextName)
-		if err != nil {
-			return nil, err
-		}
-		cfg, err := m.restConfig(contextName)
-		if err != nil {
-			return nil, err
-		}
-		return newPortForwarder(ctx, cs, cfg, namespace, podName, localPort, remotePort, readyCh)
-	})
+// AddPortForward saves a forward to a Pod or Service port and starts it.
+// Saved forwards survive restarts and resume when their context connects.
+func (m *ClientManager) AddPortForward(spec PortForwardSpec) (PortForwardInfo, error) {
+	return m.pf.add(spec)
 }
 
-func (m *ClientManager) StopPortForward(id string) {
-	m.pf.stop(id)
+func (m *ClientManager) StartPortForward(id string) (PortForwardInfo, error) {
+	return m.pf.start(id)
+}
+
+func (m *ClientManager) StopPortForward(id string) error {
+	return m.pf.stop(id)
+}
+
+func (m *ClientManager) EditPortForward(id string, localPort uint16, protocol string) (PortForwardInfo, error) {
+	return m.pf.edit(id, localPort, protocol)
+}
+
+func (m *ClientManager) RemovePortForward(id string) error {
+	return m.pf.remove(id)
 }
 
 func (m *ClientManager) ListPortForwards() []PortForwardInfo {

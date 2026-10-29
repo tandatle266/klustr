@@ -3,6 +3,7 @@ import { ArrowUpCircle, Boxes, Folder, Network } from 'lucide-react'
 import { SiGithub } from './brandIcons'
 import { useActiveContexts, useIsAggregated, useUIStore } from '@/store/ui'
 import { usePortForwards } from '@/store/portForwards'
+import { isRunning } from '@/features/portforward/portForwards'
 import { api, type UpdateResult } from '@/lib/api'
 import { BrowserOpenURL } from '@/lib/wails/wailsjs/runtime/runtime'
 
@@ -18,7 +19,7 @@ export function StatusBar() {
   const isAggregated = useIsAggregated()
   const selectedNamespaces = useUIStore((s) => s.selectedNamespaces)
   const readOnly = useUIStore((s) => s.globalReadOnly)
-  const portForwards = usePortForwards((s) => s.list)
+  const portForwards = usePortForwards((s) => s.list).filter(isRunning)
   const healthByCtx = useUIStore((s) => s.contextHealth)
   const setHealthByCtx = useUIStore((s) => s.setContextHealth)
   const [appVersion, setAppVersion] = useState<string | null>(null)
