@@ -97,6 +97,7 @@ import { NamespaceSearchPalette } from '@/features/contexts/NamespaceSearchPalet
 import { StatusBar } from '@/features/_shared/StatusBar'
 import { PodSearchPalette } from '@/features/pods/PodSearchPalette'
 import { PortForwardIndicator } from '@/features/portforward/PortForwardIndicator'
+import { PortForwardsView } from '@/features/portforward/PortForwardsView'
 import { TerminalButton } from '@/features/terminal/TerminalButton'
 import { TerminalDrawer } from '@/features/terminal/TerminalDrawer'
 import { Toaster } from '@/components/ui/sonner'
@@ -262,6 +263,8 @@ function MainView() {
       return <HelmReleasesView />
     case 'helmrepos':
       return <HelmReposView />
+    case 'portforwards':
+      return <PortForwardsView />
     case 'gateways':
       return <GatewaysView />
     case 'httproutes':

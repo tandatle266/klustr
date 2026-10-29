@@ -2,71 +2,167 @@ package kube
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
-
-	pfconstants "k8s.io/apimachinery/pkg/util/portforward"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/portforward"
-	clientspdy "k8s.io/client-go/transport/spdy"
-	clientwebsocket "k8s.io/client-go/transport/websocket"
-	"k8s.io/streaming/pkg/httpstream"
-	httpstreamspdy "k8s.io/streaming/pkg/httpstream/spdy"
 )
 
-const pfReadyTimeout = 10 * time.Second
+const (
+	pfReadyTimeout = 10 * time.Second
+	pfMaxBackoff   = 30 * time.Second
+)
+
+// Port-forward statuses as the frontend sees them.
+const (
+	pfStopped      = "stopped"      // turned off by the user
+	pfIdle         = "idle"         // on, waiting for its context to connect
+	pfStarting     = "starting"     // first connection in progress
+	pfActive       = "active"       // listening locally
+	pfReconnecting = "reconnecting" // lost its pod, retrying with backoff
+	pfError        = "error"        // gave up; Start tries again
+)
+
+var errPFNotFound = errors.New("port-forward not found")
+
+// PortForwardSpec is what a saved forward is: the target and how to reach it.
+// It is the persisted shape, so it carries nothing about the running state.
+type PortForwardSpec struct {
+	ID        string `json:"id"`
+	Context   string `json:"context"`
+	Namespace string `json:"namespace"`
+	Kind      string `json:"kind"` // Pod or Service
+	Name      string `json:"name"`
+	// Port is the container port of a Pod or the port of a Service.
+	Port uint16 `json:"port"`
+	// LocalPort is the requested local port; 0 lets the OS pick one.
+	LocalPort uint16 `json:"localPort"`
+	Protocol  string `json:"protocol"` // http or https, for the browser link
+	Enabled   bool   `json:"enabled"`
+}
 
 type PortForwardInfo struct {
 	ID         string `json:"id"`
 	Context    string `json:"context"`
 	Namespace  string `json:"namespace"`
-	PodName    string `json:"podName"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Port       uint16 `json:"port"`
 	LocalPort  uint16 `json:"localPort"`
-	RemotePort uint16 `json:"remotePort"`
+	Protocol   string `json:"protocol"`
+	Enabled    bool   `json:"enabled"`
 	Status     string `json:"status"`
+	BoundPort  uint16 `json:"boundPort"`  // the port listening locally while active
+	PodName    string `json:"podName"`    // the pod the forward reaches
+	TargetPort uint16 `json:"targetPort"` // the container port on that pod
 	Error      string `json:"error"`
 }
 
+// pfAttempt is one connection of a forward to a resolved pod. lost, when not
+// nil, closes once that pod is gone, so the forward reconnects instead of
+// failing every new connection against a dead pod.
+type pfAttempt struct {
+	forwarder portForwarder
+	pod       string
+	port      uint16
+	lost      <-chan struct{}
+}
+
+type pfConnect func(ctx context.Context, spec PortForwardSpec, localPort uint16, ready chan struct{}) (pfAttempt, error)
+
 type pfChangeFunc func()
 
-type pfSession struct {
-	info   PortForwardInfo
+// pfRun is one supervisor goroutine. An entry points at its current run, and
+// a supervisor only writes the entry while it is still that run, so a stopped
+// or restarted forward never gets overwritten by the run it replaced.
+type pfRun struct {
 	cancel context.CancelFunc
 }
 
-func (s *pfSession) close() {
-	s.cancel()
+type pfEntry struct {
+	spec   PortForwardSpec
+	status string
+	bound  uint16
+	pod    string
+	target uint16
+	err    string
+	run    *pfRun
 }
 
-type portForwarder interface {
-	ForwardPorts() error
-	GetPorts() ([]portforward.ForwardedPort, error)
-}
-
-type pfDialer func(...string) (httpstream.Connection, string, error)
-
-func (d pfDialer) Dial(protocols ...string) (httpstream.Connection, string, error) {
-	return d(protocols...)
+func (e *pfEntry) info() PortForwardInfo {
+	return PortForwardInfo{
+		ID:         e.spec.ID,
+		Context:    e.spec.Context,
+		Namespace:  e.spec.Namespace,
+		Kind:       e.spec.Kind,
+		Name:       e.spec.Name,
+		Port:       e.spec.Port,
+		LocalPort:  e.spec.LocalPort,
+		Protocol:   e.spec.Protocol,
+		Enabled:    e.spec.Enabled,
+		Status:     e.status,
+		BoundPort:  e.bound,
+		PodName:    e.pod,
+		TargetPort: e.target,
+		Error:      e.err,
+	}
 }
 
 type pfManager struct {
 	mu       sync.Mutex
-	sessions map[string]*pfSession
-	counter  uint64
+	entries  map[string]*pfEntry
+	path     string
+	connect  pfConnect
+	backoff  func(failures int) time.Duration
 	onChange pfChangeFunc
 }
 
-func newPFManager() *pfManager {
-	return &pfManager{sessions: make(map[string]*pfSession)}
+// newPFManager loads the saved forwards from path ("" keeps them in memory
+// only). Enabled ones wait as idle until resume starts their context.
+func newPFManager(path string, connect pfConnect) *pfManager {
+	mgr := &pfManager{
+		entries: make(map[string]*pfEntry),
+		path:    path,
+		connect: connect,
+		backoff: pfBackoff,
+	}
+	if path == "" {
+		return mgr
+	}
+	specs, err := loadPortForwards(path)
+	if err != nil {
+		return mgr
+	}
+	for _, spec := range specs {
+		status := pfStopped
+		if spec.Enabled {
+			status = pfIdle
+		}
+		mgr.entries[spec.ID] = &pfEntry{spec: spec, status: status}
+	}
+	return mgr
+}
+
+func pfBackoff(failures int) time.Duration {
+	d := time.Second << min(failures-1, 5)
+	return min(d, pfMaxBackoff)
+}
+
+func newPFID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return "pf-" + hex.EncodeToString(b)
+}
+
+func normalizePFProtocol(p string) string {
+	if p == "https" {
+		return p
+	}
+	return "http"
 }
 
 func (mgr *pfManager) setOnChange(cb pfChangeFunc) {
@@ -84,236 +180,418 @@ func (mgr *pfManager) notify() {
 	}
 }
 
-func newPortForwarder(
-	ctx context.Context,
-	cs *kubernetes.Clientset,
-	restCfg *rest.Config,
-	namespace, podName string,
-	localPort, remotePort uint16,
-	readyCh chan struct{},
-) (portForwarder, error) {
-	transport, upgrader, err := newStreamingSPDYTransport(ctx, restCfg)
-	if err != nil {
-		return nil, err
+// saveLocked persists the specs. A failed write only costs the restore on the
+// next launch, so it does not fail the action that triggered it.
+func (mgr *pfManager) saveLocked() {
+	if mgr.path == "" {
+		return
 	}
-	client := &http.Client{Transport: transport}
-	url := cs.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Namespace(namespace).
-		Name(podName).
-		SubResource("portforward").
-		URL()
-	spdyDialer := pfDialer(func(protocols ...string) (httpstream.Connection, string, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url.String(), nil)
-		if err != nil {
-			return nil, "", err
-		}
-		return clientspdy.NegotiateStreaming(upgrader, client, req, protocols...)
-	})
-	websocketDialer, err := newPFWebSocketDialer(ctx, restCfg, url)
-	if err != nil {
-		return nil, err
+	specs := make([]PortForwardSpec, 0, len(mgr.entries))
+	for _, e := range mgr.entries {
+		specs = append(specs, e.spec)
 	}
-	dialer := portforward.NewFallbackDialerForStreaming(websocketDialer, spdyDialer, func(err error) bool {
-		return ctx.Err() == nil && shouldFallbackStreaming(err)
-	})
-	ports := []string{fmt.Sprintf("%d:%d", localPort, remotePort)}
-	return portforward.NewOnAddressesForStreamingWithContext(ctx, dialer, []string{"localhost"}, ports, readyCh, io.Discard, io.Discard)
+	sortPFSpecs(specs)
+	_ = savePortForwards(mgr.path, specs)
 }
 
-func newPFWebSocketDialer(ctx context.Context, cfg *rest.Config, endpoint *url.URL) (httpstream.Dialer, error) {
-	transport, holder, err := clientwebsocket.RoundTripperFor(streamingWebSocketConfig(ctx, cfg))
-	if err != nil {
-		return nil, err
-	}
-	return pfDialer(func(protocols ...string) (httpstream.Connection, string, error) {
-		// The upstream tunneling dialer creates a background-context request.
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-		if err != nil {
-			return nil, "", err
+func sortPFSpecs(specs []PortForwardSpec) {
+	sort.Slice(specs, func(i, j int) bool {
+		a, b := specs[i], specs[j]
+		if a.Context != b.Context {
+			return a.Context < b.Context
 		}
-		tunneled := make([]string, len(protocols))
-		for i, protocol := range protocols {
-			tunneled[i] = pfconstants.WebsocketsSPDYTunnelingPrefix + protocol
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
 		}
-		conn, err := clientwebsocket.Negotiate(transport, holder, req, tunneled...)
-		if err != nil {
-			return nil, "", err
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
 		}
-		stream, err := httpstreamspdy.NewClientConnectionWithPings(portforward.NewTunnelingConnection("client", conn), portforward.PingPeriod)
-		if err != nil {
-			_ = conn.Close()
-			return nil, "", err
+		if a.Name != b.Name {
+			return a.Name < b.Name
 		}
-		return stream, strings.TrimPrefix(conn.Subprotocol(), pfconstants.WebsocketsSPDYTunnelingPrefix), nil
-	}), nil
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		return a.ID < b.ID
+	})
 }
 
-func (mgr *pfManager) start(
-	contextName, namespace, podName string,
-	build func(context.Context, chan struct{}) (portForwarder, error),
-) (PortForwardInfo, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	id := fmt.Sprintf("pf-%d", atomic.AddUint64(&mgr.counter, 1))
-	sess := &pfSession{
-		info:   PortForwardInfo{ID: id, Context: contextName, Namespace: namespace, PodName: podName, Status: "starting"},
-		cancel: cancel,
+// add saves a forward and starts it, waiting for the first connection. A
+// forward to the same port of the same resource is updated instead of
+// duplicated.
+func (mgr *pfManager) add(spec PortForwardSpec) (PortForwardInfo, error) {
+	if spec.Kind != "Pod" && spec.Kind != "Service" {
+		return PortForwardInfo{}, fmt.Errorf("cannot port-forward a %s", spec.Kind)
 	}
+	if spec.Context == "" || spec.Namespace == "" || spec.Name == "" || spec.Port == 0 {
+		return PortForwardInfo{}, errors.New("port-forward needs a context, namespace, name and port")
+	}
+	spec.Protocol = normalizePFProtocol(spec.Protocol)
 	mgr.mu.Lock()
-	mgr.sessions[id] = sess
-	mgr.mu.Unlock()
-	started := false
-	defer func() {
-		if !started {
-			mgr.stop(id)
+	var entry *pfEntry
+	for _, e := range mgr.entries {
+		s := e.spec
+		if s.Context == spec.Context && s.Namespace == spec.Namespace && s.Kind == spec.Kind && s.Name == spec.Name && s.Port == spec.Port {
+			entry = e
+			break
 		}
-	}()
+	}
+	if entry == nil {
+		spec.ID = newPFID()
+		spec.Enabled = false
+		entry = &pfEntry{spec: spec, status: pfStopped}
+		mgr.entries[spec.ID] = entry
+	} else {
+		entry.spec.LocalPort = spec.LocalPort
+		entry.spec.Protocol = spec.Protocol
+	}
+	id := entry.spec.ID
+	mgr.mu.Unlock()
+	return mgr.start(id)
+}
 
-	readyCh := make(chan struct{})
-	forwarder, err := build(ctx, readyCh)
-	if err != nil {
+// start turns a forward on (restarting it if it runs) and waits for the first
+// connection. A failure turns it back off with the error shown, rather than
+// retrying something the user is watching fail.
+func (mgr *pfManager) start(id string) (PortForwardInfo, error) {
+	mgr.mu.Lock()
+	e, ok := mgr.entries[id]
+	if !ok {
+		mgr.mu.Unlock()
+		return PortForwardInfo{}, errPFNotFound
+	}
+	e.spec.Enabled = true
+	ctx, run := mgr.launchLocked(e)
+	mgr.saveLocked()
+	mgr.mu.Unlock()
+	mgr.notify()
+
+	first := make(chan error, 1)
+	go mgr.supervise(ctx, e, run, first)
+	if err := <-first; err != nil {
 		return PortForwardInfo{}, err
+	}
+	return mgr.get(id)
+}
+
+func (mgr *pfManager) launchLocked(e *pfEntry) (context.Context, *pfRun) {
+	if e.run != nil {
+		e.run.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &pfRun{cancel: cancel}
+	e.run = run
+	e.status = pfStarting
+	e.bound, e.pod, e.target, e.err = 0, "", 0, ""
+	return ctx, run
+}
+
+// resume starts the enabled forwards of a context that just connected. A
+// forward that is already running is left alone, so a re-watch after a
+// credential refresh does not drop its connections.
+func (mgr *pfManager) resume(contextName string) {
+	type launch struct {
+		ctx   context.Context
+		entry *pfEntry
+		run   *pfRun
+	}
+	var launches []launch
+	mgr.mu.Lock()
+	for _, e := range mgr.entries {
+		if e.spec.Context == contextName && e.spec.Enabled && e.run == nil {
+			ctx, run := mgr.launchLocked(e)
+			launches = append(launches, launch{ctx, e, run})
+		}
+	}
+	mgr.mu.Unlock()
+	if len(launches) == 0 {
+		return
+	}
+	for _, l := range launches {
+		go mgr.supervise(l.ctx, l.entry, l.run, nil)
+	}
+	mgr.notify()
+}
+
+// supervise keeps one forward connected until its run is canceled. first,
+// when set, receives the outcome of the first connection; without it (a
+// restore) a failing first connection is retried like a lost one.
+func (mgr *pfManager) supervise(ctx context.Context, e *pfEntry, run *pfRun, first chan<- error) {
+	defer run.cancel()
+	mgr.mu.Lock()
+	spec := e.spec
+	mgr.mu.Unlock()
+	local := spec.LocalPort
+	failures := 0
+	for {
+		conn, wait, err := mgr.open(ctx, spec, local)
+		if err == nil {
+			failures = 0
+			// Reconnects reuse the first port the OS picked, so a link
+			// the user already opened keeps working.
+			local = conn.bound
+			if !mgr.update(e, run, func(e *pfEntry) {
+				e.status = pfActive
+				e.bound, e.pod, e.target, e.err = conn.bound, conn.pod, conn.port, ""
+			}) {
+				if first != nil {
+					first <- context.Canceled
+				}
+				return
+			}
+			if first != nil {
+				first <- nil
+				first = nil
+			}
+			err = wait()
+		}
+		if ctx.Err() != nil {
+			if first != nil {
+				first <- context.Canceled
+			}
+			return
+		}
+		// A start the user is waiting on reports its failure instead of
+		// retrying; so does a local port conflict, which a retry cannot fix.
+		if first != nil || isPFListenError(err) {
+			waited := first != nil
+			mgr.update(e, run, func(e *pfEntry) {
+				e.status = pfError
+				e.bound, e.err = 0, err.Error()
+				e.run = nil
+				if waited {
+					e.spec.Enabled = false
+					mgr.saveLocked()
+				}
+			})
+			if first != nil {
+				first <- err
+			}
+			return
+		}
+		failures++
+		if !mgr.update(e, run, func(e *pfEntry) {
+			e.status = pfReconnecting
+			e.bound, e.err = 0, err.Error()
+		}) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(mgr.backoff(failures)):
+		}
+	}
+}
+
+func isPFListenError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unable to listen")
+}
+
+type pfConnected struct {
+	bound uint16
+	pod   string
+	port  uint16
+}
+
+// open makes one connection and returns once it listens locally. wait then
+// blocks until that connection ends and always releases the local listener
+// before returning, so the next attempt can bind the same port.
+func (mgr *pfManager) open(ctx context.Context, spec PortForwardSpec, local uint16) (pfConnected, func() error, error) {
+	actx, cancel := context.WithCancel(ctx)
+	ready := make(chan struct{})
+	att, err := mgr.connect(actx, spec, local, ready)
+	if err != nil {
+		cancel()
+		return pfConnected{}, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return PortForwardInfo{}, err
+		cancel()
+		return pfConnected{}, nil, err
 	}
 	resultCh := make(chan error, 1)
-
 	go func() {
-		resultCh <- forwarder.ForwardPorts()
+		resultCh <- att.forwarder.ForwardPorts()
 	}()
 
+	timeout := time.NewTimer(pfReadyTimeout)
+	defer timeout.Stop()
 	select {
 	case <-ctx.Done():
-		return PortForwardInfo{}, ctx.Err()
-	case <-readyCh:
+		cancel()
+		return pfConnected{}, nil, ctx.Err()
+	case <-ready:
 	case err := <-resultCh:
+		cancel()
 		if err == nil {
 			err = errors.New("port-forward terminated before ready")
 		}
-		return PortForwardInfo{}, err
-	case <-time.After(pfReadyTimeout):
-		return PortForwardInfo{}, fmt.Errorf("timed out waiting for port-forward to become ready")
+		return pfConnected{}, nil, err
+	case <-timeout.C:
+		cancel()
+		return pfConnected{}, nil, errors.New("timed out waiting for port-forward to become ready")
 	}
 
-	actualPorts, err := forwarder.GetPorts()
-	if err != nil || len(actualPorts) == 0 {
-		if err == nil {
-			err = errors.New("no ports reported by forwarder")
-		}
-		return PortForwardInfo{}, err
+	ports, err := att.forwarder.GetPorts()
+	if err == nil && len(ports) == 0 {
+		err = errors.New("no ports reported by forwarder")
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		cancel()
+		return pfConnected{}, nil, err
 	}
 
-	info := PortForwardInfo{
-		ID:         id,
-		Context:    contextName,
-		Namespace:  namespace,
-		PodName:    podName,
-		LocalPort:  actualPorts[0].Local,
-		RemotePort: actualPorts[0].Remote,
-		Status:     "ready",
-	}
-	mgr.mu.Lock()
-	if mgr.sessions[id] != sess {
-		mgr.mu.Unlock()
-		return PortForwardInfo{}, context.Canceled
-	}
-	sess.info = info
-	mgr.mu.Unlock()
-	started = true
-	mgr.notify()
-
-	go func() {
+	wait := func() error {
 		defer cancel()
-		err := <-resultCh
-		mgr.mu.Lock()
-		s, ok := mgr.sessions[id]
-		if ok {
-			if err != nil {
-				// Keep the errored session listed until the user dismisses
-				// it via stop() — deleting here would make the forward
-				// vanish with no explanation of why it died.
-				s.info.Status = "error"
-				s.info.Error = err.Error()
-			} else {
-				s.info.Status = "closed"
-				delete(mgr.sessions, id)
+		select {
+		case err := <-resultCh:
+			if err == nil {
+				err = errors.New("port-forward closed")
 			}
+			return err
+		case <-att.lost:
+			cancel()
+			<-resultCh //nolint:errcheck // the lost pod is the error worth showing
+			return fmt.Errorf("pod %s is gone or no longer running", att.pod)
+		case <-ctx.Done():
+			cancel()
+			<-resultCh //nolint:errcheck // a canceled run has nothing to report
+			return ctx.Err()
 		}
-		mgr.mu.Unlock()
-		mgr.notify()
-	}()
+	}
+	return pfConnected{bound: ports[0].Local, pod: att.pod, port: att.port}, wait, nil
+}
 
+// update applies fn while run is still the entry's current run and reports
+// whether it was.
+func (mgr *pfManager) update(e *pfEntry, run *pfRun, fn func(*pfEntry)) bool {
+	mgr.mu.Lock()
+	if mgr.entries[e.spec.ID] != e || e.run != run {
+		mgr.mu.Unlock()
+		return false
+	}
+	fn(e)
+	mgr.mu.Unlock()
+	mgr.notify()
+	return true
+}
+
+func (mgr *pfManager) get(id string) (PortForwardInfo, error) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	e, ok := mgr.entries[id]
+	if !ok {
+		return PortForwardInfo{}, errPFNotFound
+	}
+	return e.info(), nil
+}
+
+// stop turns a forward off and keeps it listed so it can be started again.
+func (mgr *pfManager) stop(id string) error {
+	mgr.mu.Lock()
+	e, ok := mgr.entries[id]
+	if !ok {
+		mgr.mu.Unlock()
+		return errPFNotFound
+	}
+	if e.run != nil {
+		e.run.cancel()
+		e.run = nil
+	}
+	e.spec.Enabled = false
+	e.status = pfStopped
+	e.bound, e.pod, e.target, e.err = 0, "", 0, ""
+	mgr.saveLocked()
+	mgr.mu.Unlock()
+	mgr.notify()
+	return nil
+}
+
+// edit changes the local port and protocol, restarting a running forward so
+// the new port takes effect.
+func (mgr *pfManager) edit(id string, localPort uint16, protocol string) (PortForwardInfo, error) {
+	mgr.mu.Lock()
+	e, ok := mgr.entries[id]
+	if !ok {
+		mgr.mu.Unlock()
+		return PortForwardInfo{}, errPFNotFound
+	}
+	restart := e.run != nil && e.spec.LocalPort != localPort
+	e.spec.LocalPort = localPort
+	e.spec.Protocol = normalizePFProtocol(protocol)
+	mgr.saveLocked()
+	info := e.info()
+	mgr.mu.Unlock()
+	if restart {
+		return mgr.start(id)
+	}
+	mgr.notify()
 	return info, nil
 }
 
-func (mgr *pfManager) stop(id string) {
+func (mgr *pfManager) remove(id string) error {
 	mgr.mu.Lock()
-	sess, ok := mgr.sessions[id]
-	// Remove and notify synchronously for every stop, not just dismissing an
-	// errored one. Otherwise a healthy stop only updated the UI when the monitor
-	// goroutine woke as ForwardPorts returned, which can lag on a wedged SPDY
-	// connection. The monitor's ok-check no-ops on the already-removed id, and
-	// an errored session's monitor has already exited.
-	if ok {
-		delete(mgr.sessions, id)
-	}
-	mgr.mu.Unlock()
+	e, ok := mgr.entries[id]
 	if !ok {
-		return
+		mgr.mu.Unlock()
+		return errPFNotFound
 	}
-	sess.close()
+	if e.run != nil {
+		e.run.cancel()
+	}
+	delete(mgr.entries, id)
+	mgr.saveLocked()
+	mgr.mu.Unlock()
 	mgr.notify()
+	return nil
 }
 
 func (mgr *pfManager) list() []PortForwardInfo {
 	mgr.mu.Lock()
-	out := make([]PortForwardInfo, 0, len(mgr.sessions))
-	for _, s := range mgr.sessions {
-		if s.info.Status == "starting" {
-			continue
-		}
-		out = append(out, s.info)
+	specs := make([]PortForwardSpec, 0, len(mgr.entries))
+	for _, e := range mgr.entries {
+		specs = append(specs, e.spec)
+	}
+	sortPFSpecs(specs)
+	out := make([]PortForwardInfo, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, mgr.entries[s.ID].info())
 	}
 	mgr.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
-// stopForContext closes every port-forward of the given context, so a
-// disconnect releases its local listeners, and notifies the frontend. Each
-// session's monitor goroutine then finds its id gone and does nothing.
-func (mgr *pfManager) stopForContext(contextName string) {
-	mgr.mu.Lock()
-	closing := make([]*pfSession, 0)
-	for id, s := range mgr.sessions {
-		if s.info.Context == contextName {
-			closing = append(closing, s)
-			delete(mgr.sessions, id)
-		}
+// suspendContext stops the running forwards of a context on disconnect,
+// releasing their local listeners. They stay enabled, so resume restarts
+// them on the next connect.
+func (mgr *pfManager) suspendContext(contextName string) {
+	if mgr.suspend(func(e *pfEntry) bool { return e.spec.Context == contextName }) {
+		mgr.notify()
 	}
-	mgr.mu.Unlock()
-	if len(closing) == 0 {
-		return
-	}
-	for _, s := range closing {
-		s.close()
-	}
-	mgr.notify()
 }
 
-// stopAll closes every active port-forward. Called from
-// ClientManager.Shutdown so the local listeners are released cleanly on
-// app quit instead of being killed mid-connection.
+// stopAll releases every listener on app quit. Forwards stay enabled in the
+// saved file, so the next launch restores them.
 func (mgr *pfManager) stopAll() {
+	mgr.suspend(func(*pfEntry) bool { return true })
+}
+
+func (mgr *pfManager) suspend(match func(*pfEntry) bool) bool {
 	mgr.mu.Lock()
-	sessions := make([]*pfSession, 0, len(mgr.sessions))
-	for _, s := range mgr.sessions {
-		sessions = append(sessions, s)
+	defer mgr.mu.Unlock()
+	changed := false
+	for _, e := range mgr.entries {
+		if e.run == nil || !match(e) {
+			continue
+		}
+		e.run.cancel()
+		e.run = nil
+		e.status = pfIdle
+		e.bound, e.err = 0, ""
+		changed = true
 	}
-	mgr.sessions = make(map[string]*pfSession)
-	mgr.mu.Unlock()
-	for _, s := range sessions {
-		s.close()
-	}
+	return changed
 }

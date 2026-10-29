@@ -125,6 +125,7 @@ export type ResourceView =
   | 'clusterrolebindings'
   | 'certificatesigningrequests'
   | 'accessreview'
+  | 'portforwards'
   | 'helmreleases'
   | 'helmrepos'
   | 'gateways'

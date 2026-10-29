@@ -9169,10 +9169,16 @@ export namespace kube {
 	    id: string;
 	    context: string;
 	    namespace: string;
-	    podName: string;
+	    kind: string;
+	    name: string;
+	    port: number;
 	    localPort: number;
-	    remotePort: number;
+	    protocol: string;
+	    enabled: boolean;
 	    status: string;
+	    boundPort: number;
+	    podName: string;
+	    targetPort: number;
 	    error: string;
 	
 	    static createFrom(source: any = {}) {
@@ -9184,10 +9190,16 @@ export namespace kube {
 	        this.id = source["id"];
 	        this.context = source["context"];
 	        this.namespace = source["namespace"];
-	        this.podName = source["podName"];
+	        this.kind = source["kind"];
+	        this.name = source["name"];
+	        this.port = source["port"];
 	        this.localPort = source["localPort"];
-	        this.remotePort = source["remotePort"];
+	        this.protocol = source["protocol"];
+	        this.enabled = source["enabled"];
 	        this.status = source["status"];
+	        this.boundPort = source["boundPort"];
+	        this.podName = source["podName"];
+	        this.targetPort = source["targetPort"];
 	        this.error = source["error"];
 	    }
 	}

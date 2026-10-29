@@ -287,7 +287,7 @@ function ResourceDetailPanelInner({ contextName, resource, expanded, canSplit, o
                   podName={resource.name}
                 />
               )}
-              {resource.kind === 'Pod' && (
+              {(resource.kind === 'Pod' || resource.kind === 'Service') && (
                 <PortForwardButton contextName={contextName} resource={resource} />
               )}
               {!readOnly && resource.kind === 'Node' && (

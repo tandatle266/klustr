@@ -9,6 +9,7 @@ import {
   Binary,
   Boxes,
   Briefcase,
+  Cable,
   CalendarClock,
   CirclePlay,
   CircuitBoard,
@@ -199,6 +200,8 @@ export const RESOURCE_GROUPS: ResourceGroup[] = [
       { label: 'IngressClasses', view: 'ingressclasses', icon: Compass, kind: 'IngressClass' },
       { label: 'Service CIDRs', view: 'servicecidrs', icon: Waypoints, kind: 'ServiceCIDR' },
       { label: 'IP Addresses', view: 'ipaddresses', icon: Network, kind: 'IPAddress' },
+      // Saved by Klustr rather than listed from a cluster, so always shown.
+      { label: 'Port Forwarding', view: 'portforwards', icon: Cable },
     ],
   },
   {

@@ -73,7 +73,7 @@ Klustr is a cross-platform Kubernetes desktop client built with [Wails](https://
 - 🚀 **Scale, restart, pause/resume.** Replica controls, one-click rolling restart, inline pause/resume, HPA min/max editable inline.
 - 📐 **In-place pod resize.** Change a running container's CPU / memory requests and limits via the `pods/resize` subresource — no pod recreation; shows the live resize status (Deferred / Infeasible).
 - ⏪ **Rollout history & rollback.** Side-by-side template diff and one-click revert on Deployments / StatefulSets / DaemonSets.
-- 🔄 **Port-forwarding.** Suggested local ports, persistent header indicator, click-to-open in browser.
+- 🔄 **Port-forwarding.** Pods and Services, a Forward link on every port, a Port Forwarding view to start, stop and edit saved forwards, automatic reconnect when the pod goes away, and restore on the next launch.
 - 🗺️ **Cluster overviews.** CPU / memory / pod donuts, workloads health, recent warnings — single-cluster or aggregated.
 - 🧭 **Cross-resource navigation.** Drill from workload to pod to node and back.
 - 🎨 **Themes & shortcuts.** Command palette (`⌘K`), pod search (`⌘P`), namespace search (`⌘N`), keyboard cheatsheet (`?`).

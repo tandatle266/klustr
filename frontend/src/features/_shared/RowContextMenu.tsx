@@ -109,7 +109,7 @@ export function RowContextMenu({
             <span>Exec shell</span>
           </ContextMenuItem>
         )}
-        {isPod && canPortForward && (
+        {canPortForward && (
           <ContextMenuItem onSelect={() => setPendingAction({ kind: 'portforward', resource })}>
             <Network />
             <span>Port-forward</span>
